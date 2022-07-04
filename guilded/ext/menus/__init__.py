@@ -24,40 +24,26 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 """
 
-import asyncio
-import discord
+import guilded
+from guilded.ext import commands
 
+import asyncio
 import itertools
 import inspect
-import bisect
 import logging
-import re
+from typing import Optional
 from collections import OrderedDict, namedtuple
 
 # Needed for the setup.py script
 __version__ = '1.0.0-a'
 
-# consistency with the `discord` namespaced logging
+# consistency with the `guilded` namespaced logging
 log = logging.getLogger(__name__)
+
 
 class MenuError(Exception):
     pass
 
-class CannotEmbedLinks(MenuError):
-    def __init__(self):
-        super().__init__('Bot does not have embed links permission in this channel.')
-
-class CannotSendMessages(MenuError):
-    def __init__(self):
-        super().__init__('Bot cannot send messages in this channel.')
-
-class CannotAddReactions(MenuError):
-    def __init__(self):
-        super().__init__('Bot cannot add reactions in this channel.')
-
-class CannotReadMessageHistory(MenuError):
-    def __init__(self):
-        super().__init__('Bot does not have Read Message History permissions in this channel.')
 
 class Position:
     __slots__ = ('number', 'bucket')
@@ -93,31 +79,27 @@ class Position:
     def __repr__(self):
         return '<{0.__class__.__name__}: {0.number}>'.format(self)
 
+
 class Last(Position):
     __slots__ = ()
     def __init__(self, number=0):
         super().__init__(number, bucket=2)
+
 
 class First(Position):
     __slots__ = ()
     def __init__(self, number=0):
         super().__init__(number, bucket=0)
 
-_custom_emoji = re.compile(r'<?(?P<animated>a)?:?(?P<name>[A-Za-z0-9\_]+):(?P<id>[0-9]{13,20})>?')
 
-def _cast_emoji(obj, *, _custom_emoji=_custom_emoji):
-    if isinstance(obj, discord.PartialEmoji):
-        return obj
+def _cast_emote(emote_id: int) -> guilded.Emote:
+    if isinstance(emote_id, guilded.Emote):
+        return emote_id
+    elif not isinstance(emote_id, int):
+        raise TypeError('emote_id must be type int or Emote, not %s.' % emote_id.__class__.__name__)
 
-    obj = str(obj)
-    match = _custom_emoji.match(obj)
-    if match is not None:
-        groups = match.groupdict()
-        animated = bool(groups['animated'])
-        emoji_id = int(groups['id'])
-        name = groups['name']
-        return discord.PartialEmoji(name=name, animated=animated, id=emoji_id)
-    return discord.PartialEmoji(name=obj, id=None, animated=False)
+    return guilded.Emote(data={'id': emote_id, 'url': None}, state=None)
+
 
 class Button:
     """Represents a reaction-style button for the :class:`Menu`.
@@ -127,13 +109,14 @@ class Button:
     :func:`button`.
 
     The action must have both a ``self`` and a ``payload`` parameter
-    of type :class:`discord.RawReactionActionEvent`.
+    of type :class:`guilded.RawReactionActionEvent`.
 
     Attributes
     ------------
-    emoji: :class:`discord.PartialEmoji`
-        The emoji to use as the button. Note that passing a string will
-        transform it into a :class:`discord.PartialEmoji`.
+    emote: :class:`guilded.Emote`
+        The emote to use as the button. Note that passing an integer will
+        transform it into a :class:`guilded.Emote`, and passing a string
+        will raise a :exc:`ValueError`.
     action
         A coroutine that is called when the button is pressed.
     skip_if: Optional[Callable[[:class:`Menu`], :class:`bool`]]
@@ -142,17 +125,15 @@ class Button:
         and will not be processed.
     position: :class:`Position`
         The position the button should have in the initial order.
-        Note that since Discord does not actually maintain reaction
-        order, this is a best effort attempt to have an order until
-        the user restarts their client. Defaults to ``Position(0)``.
+        Defaults to ``Position(0)``.
     lock: :class:`bool`
         Whether the button should lock all other buttons from being processed
         until this button is done. Defaults to ``True``.
     """
-    __slots__ = ('emoji', '_action', '_skip_if', 'position', 'lock')
+    __slots__ = ('emote', '_action', '_skip_if', 'position', 'lock')
 
-    def __init__(self, emoji, action, *, skip_if=None, position=None, lock=True):
-        self.emoji = _cast_emoji(emoji)
+    def __init__(self, emote, action, *, skip_if=None, position=None, lock=True):
+        self.emote = _cast_emote(emote)
         self.action = action
         self.skip_if = skip_if
         self.position = position or Position(0)
@@ -207,16 +188,17 @@ class Button:
         return self._action(menu, payload)
 
     def __str__(self):
-        return str(self.emoji)
+        return str(self.emote)
 
     def is_valid(self, menu):
         return not self.skip_if(menu)
 
-def button(emoji, **kwargs):
+
+def button(emote, **kwargs):
     """Denotes a method to be button for the :class:`Menu`.
 
     The methods being wrapped must have both a ``self`` and a ``payload``
-    parameter of type :class:`discord.RawReactionActionEvent`.
+    parameter of type :class:`guilded.RawReactionActionEvent`.
 
     The keyword arguments are forwarded to the :class:`Button` constructor.
 
@@ -229,24 +211,26 @@ def button(emoji, **kwargs):
             async def send_initial_message(self, ctx, channel):
                 return await channel.send(f'Hello {ctx.author}')
 
-            @button('\\N{THUMBS UP SIGN}')
+            # https://gist.github.com/shayypy/8e492ad2d8801bfd38415986f68a547e
+            @button(90001164)
             async def on_thumbs_up(self, payload):
                 await self.message.edit(content=f'Thanks {self.ctx.author}!')
 
-            @button('\\N{THUMBS DOWN SIGN}')
+            @button(90001170)
             async def on_thumbs_down(self, payload):
                 await self.message.edit(content=f"That's not nice {self.ctx.author}...")
 
     Parameters
     ------------
-    emoji: Union[:class:`str`, :class:`discord.PartialEmoji`]
-        The emoji to use for the button.
+    emote: Union[:class:`str`, :class:`guilded.Emote`]
+        The emote to use for the button.
     """
     def decorator(func):
-        func.__menu_button__ = _cast_emoji(emoji)
+        func.__menu_button__ = _cast_emote(emote)
         func.__menu_button_kwargs__ = kwargs
         return func
     return decorator
+
 
 class _MenuMeta(type):
     @classmethod
@@ -284,16 +268,17 @@ class _MenuMeta(type):
     def get_buttons(cls):
         buttons = OrderedDict()
         for func in cls.__menu_buttons__:
-            emoji = func.__menu_button__
-            buttons[emoji] = Button(emoji, func, **func.__menu_button_kwargs__)
+            emote = func.__menu_button__
+            buttons[emote.id] = Button(emote, func, **func.__menu_button_kwargs__)
         return buttons
+
 
 class Menu(metaclass=_MenuMeta):
     r"""An interface that allows handling menus by using reactions as buttons.
 
     Buttons should be marked with the :func:`button` decorator. Please note that
     this expects the methods to have a single parameter, the ``payload``. This
-    ``payload`` is of type :class:`discord.RawReactionActionEvent`.
+    ``payload`` is of type :class:`guilded.RawReactionActionEvent`.
 
     Attributes
     ------------
@@ -304,8 +289,8 @@ class Menu(metaclass=_MenuMeta):
     clear_reactions_after: :class:`bool`
         Whether to clear reactions after the menu interaction is done.
         Note that :attr:`delete_message_after` takes priority over this attribute.
-        If the bot does not have permissions to clear the reactions then it will
-        delete the reactions one by one.
+        Also note that Guilded bots do not have the ability to clear all reactions instantaneously.
+        The bot's own reactions will always be cleared one-by-one regardless of permissions.
     check_embeds: :class:`bool`
         Whether to verify embed permissions as well.
     ctx: Optional[:class:`commands.Context`]
@@ -314,7 +299,7 @@ class Menu(metaclass=_MenuMeta):
     bot: Optional[:class:`commands.Bot`]
         The bot that is running this pagination session or ``None`` if it hasn't
         been started yet.
-    message: Optional[:class:`discord.Message`]
+    message: Optional[:class:`guilded.ChatMessage`]
         The message that has been sent for handling the menu. This is the returned
         message of :meth:`send_initial_message`. You can set it in order to avoid
         calling :meth:`send_initial_message`\, if for example you have a pre-existing
@@ -330,15 +315,15 @@ class Menu(metaclass=_MenuMeta):
         self._can_remove_reactions = False
         self.__tasks = []
         self._running = True
-        self.message = message
-        self.ctx = None
-        self.bot = None
-        self._author_id = None
+        self.message: guilded.ChatMessage = message
+        self.ctx: commands.Context = None
+        self.bot: commands.Bot = None
+        self._author_id: str = None
         self._buttons = self.__class__.get_buttons()
         self._lock = asyncio.Lock()
         self._event = asyncio.Event()
 
-    @discord.utils.cached_property
+    @property
     def buttons(self):
         """Retrieves the buttons that are to be used for this menu session.
 
@@ -347,11 +332,11 @@ class Menu(metaclass=_MenuMeta):
         Returns
         ---------
         Mapping[:class:`str`, :class:`Button`]
-            A mapping of button emoji to the actual button class.
+            A mapping of button emote to the actual button class.
         """
         buttons = sorted(self._buttons.values(), key=lambda b: b.position)
         return {
-            button.emoji: button
+            button.emote.id: button
             for button in buttons
             if button.is_valid(self)
         }
@@ -366,14 +351,7 @@ class Menu(metaclass=_MenuMeta):
         set to ``True``. Note that when this happens this function
         will need to be awaited.
 
-        If a button with the same emoji is added then it is overridden.
-
-        .. warning::
-
-            If the menu has started and the reaction is added, the order
-            property of the newly added button is ignored due to an API
-            limitation with Discord and the fact that reaction ordering
-            is not guaranteed.
+        If a button with the same emote is added then it is overridden.
 
         Parameters
         ------------
@@ -387,23 +365,23 @@ class Menu(metaclass=_MenuMeta):
         ---------
         MenuError
             Tried to use ``react`` when the menu had not been started.
-        discord.HTTPException
+        guilded.HTTPException
             Adding the reaction failed.
         """
 
-        self._buttons[button.emoji] = button
+        self._buttons[button.emote.id] = button
 
         if react:
             if self.__tasks:
                 async def wrapped():
                     # Add the reaction
                     try:
-                        await self.message.add_reaction(button.emoji)
-                    except discord.HTTPException:
+                        await self.message.add_reaction(button.emote)
+                    except guilded.HTTPException:
                         raise
                     else:
                         # Update the cache to have the value
-                        self.buttons[button.emoji] = button
+                        self.buttons[button.emote.id] = button
 
                 return wrapped()
 
@@ -411,7 +389,7 @@ class Menu(metaclass=_MenuMeta):
                 raise MenuError('Menu has not been started yet')
             return dummy()
 
-    def remove_button(self, emoji, *, react=False):
+    def remove_button(self, emote, *, react=False):
         """|maybecoro|
 
         Removes a button from the list of buttons.
@@ -420,8 +398,8 @@ class Menu(metaclass=_MenuMeta):
 
         Parameters
         ------------
-        emoji: Union[:class:`Button`, :class:`str`]
-            The emoji or the button to remove.
+        emote: Union[:class:`Button`, :class:`int`]
+            The emote or the button to remove.
         react: :class:`bool`
             Whether to remove the reaction if the menu has been started.
             Note this turns the method into a coroutine.
@@ -430,16 +408,16 @@ class Menu(metaclass=_MenuMeta):
         ---------
         MenuError
             Tried to use ``react`` when the menu had not been started.
-        discord.HTTPException
+        guilded.HTTPException
             Removing the reaction failed.
         """
 
-        if isinstance(emoji, Button):
-            emoji = emoji.emoji
+        if isinstance(emote, Button):
+            emote = emote.emote
         else:
-            emoji = _cast_emoji(emoji)
+            emote = _cast_emote(emote)
 
-        self._buttons.pop(emoji, None)
+        self._buttons.pop(emote.id, None)
 
         if react:
             if self.__tasks:
@@ -447,8 +425,8 @@ class Menu(metaclass=_MenuMeta):
                     # Remove the reaction from being processable
                     # Removing it from the cache first makes it so the check
                     # doesn't get triggered.
-                    self.buttons.pop(emoji, None)
-                    await self.message.remove_reaction(emoji, self.__me)
+                    self.buttons.pop(emote.id, None)
+                    await self.message.remove_self_reaction(emote)
                 return wrapped()
 
             async def dummy():
@@ -475,7 +453,7 @@ class Menu(metaclass=_MenuMeta):
         ---------
         MenuError
             Tried to use ``react`` when the menu had not been started.
-        discord.HTTPException
+        guilded.HTTPException
             Clearing the reactions failed.
         """
 
@@ -485,35 +463,32 @@ class Menu(metaclass=_MenuMeta):
             if self.__tasks:
                 async def wrapped():
                     # A fast path if we have permissions
-                    if self._can_remove_reactions:
-                        try:
-                            del self.buttons
-                        except AttributeError:
-                            pass
-                        finally:
-                            await self.message.clear_reactions()
-                        return
+                    #if self._can_remove_reactions:
+                    #    try:
+                    #        del self.buttons
+                    #    except AttributeError:
+                    #        pass
+                    #    finally:
+                    #        await self.message.clear_reactions()
+                    #    return
 
-                    # Remove the cache (the next call will have the updated buttons)
-                    reactions = list(self.buttons.keys())
-                    try:
-                        del self.buttons
-                    except AttributeError:
-                        pass
-
-                    for reaction in reactions:
-                        await self.message.remove_reaction(reaction, self.__me)
+                    reaction_ids = list(self.buttons.keys())
+                    for reaction_id in reaction_ids:
+                        await self.message.remove_self_reaction(reaction_id)
 
                 return wrapped()
             async def dummy():
                 raise MenuError('Menu has not been started yet')
             return dummy()
 
-    def should_add_reactions(self):
+    def should_add_reactions(self) -> bool:
         """:class:`bool`: Whether to add reactions to this menu session."""
-        return len(self.buttons)
+        return len(self.buttons) != 0
 
     def _verify_permissions(self, ctx, channel, permissions):
+        # Guilded has no reliable way to check permissions currently
+        return
+
         if not permissions.send_messages:
             raise CannotSendMessages()
 
@@ -527,15 +502,15 @@ class Menu(metaclass=_MenuMeta):
             if not permissions.read_message_history:
                 raise CannotReadMessageHistory()
 
-    def reaction_check(self, payload):
+    def reaction_check(self, payload: guilded.RawReactionActionEvent):
         """The function that is used to check whether the payload should be processed.
-        This is passed to :meth:`discord.ext.commands.Bot.wait_for <Bot.wait_for>`.
+        This is passed to :meth:`guilded.ext.commands.Bot.wait_for <Bot.wait_for>`.
 
         There should be no reason to override this function for most users.
 
         Parameters
         ------------
-        payload: :class:`discord.RawReactionActionEvent`
+        payload: :class:`guilded.RawReactionActionEvent`
             The payload to check.
 
         Returns
@@ -548,7 +523,7 @@ class Menu(metaclass=_MenuMeta):
         if payload.user_id not in {self.bot.owner_id, self._author_id, *self.bot.owner_ids}:
             return False
 
-        return payload.emoji in self.buttons
+        return payload.emote.id in self.buttons
 
     async def _internal_loop(self):
         try:
@@ -558,8 +533,8 @@ class Menu(metaclass=_MenuMeta):
             tasks = []
             while self._running:
                 tasks = [
-                    asyncio.ensure_future(self.bot.wait_for('raw_reaction_add', check=self.reaction_check)),
-                    asyncio.ensure_future(self.bot.wait_for('raw_reaction_remove', check=self.reaction_check))
+                    asyncio.ensure_future(self.bot.wait_for('raw_message_reaction_add', check=self.reaction_check)),
+                    asyncio.ensure_future(self.bot.wait_for('raw_message_reaction_remove', check=self.reaction_check))
                 ]
                 done, pending = await asyncio.wait(tasks, timeout=self.timeout, return_when=asyncio.FIRST_COMPLETED)
                 for task in pending:
@@ -569,7 +544,8 @@ class Menu(metaclass=_MenuMeta):
                     raise asyncio.TimeoutError()
 
                 # Exception will propagate if e.g. cancelled or timed out
-                payload = done.pop().result()
+                task: asyncio.Task = done.pop()
+                payload = task.result()
                 loop.create_task(self.update(payload))
 
                 # NOTE: Removing the reaction ourselves after it's been done when
@@ -600,7 +576,7 @@ class Menu(metaclass=_MenuMeta):
                 self.__timed_out = False
 
             # Can't do any requests if the bot is closed
-            if self.bot.is_closed():
+            if self.bot.closed:
                 return
 
             # Wrap it in another block anyway just to ensure
@@ -610,13 +586,13 @@ class Menu(metaclass=_MenuMeta):
                     return await self.message.delete()
 
                 if self.clear_reactions_after:
-                    if self._can_remove_reactions:
-                        return await self.message.clear_reactions()
+                    #if self._can_remove_reactions:
+                    #    return await self.message.clear_reactions()
 
-                    for button_emoji in self.buttons:
+                    for button_emote_id in self.buttons:
                         try:
-                            await self.message.remove_reaction(button_emoji, self.__me)
-                        except discord.HTTPException:
+                            await self.message.remove_self_reaction(button_emote_id)
+                        except guilded.HTTPException:
                             continue
             except Exception:
                 pass
@@ -628,10 +604,10 @@ class Menu(metaclass=_MenuMeta):
 
         Parameters
         -----------
-        payload: :class:`discord.RawReactionActionEvent`
+        payload: :class:`guilded.RawReactionActionEvent`
             The reaction event that triggered this update.
         """
-        button = self.buttons[payload.emoji]
+        button = self.buttons[payload.emote.id]
         if not self._running:
             return
 
@@ -662,7 +638,7 @@ class Menu(metaclass=_MenuMeta):
         # which would require awaiting, such as stopping an erroring menu.
         log.exception("Unhandled exception during menu update.", exc_info=exc)
 
-    async def start(self, ctx, *, channel=None, wait=False):
+    async def start(self, ctx: commands.Context, *, channel=None, wait=False):
         """|coro|
 
         Starts the interactive menu session.
@@ -671,7 +647,7 @@ class Menu(metaclass=_MenuMeta):
         -----------
         ctx: :class:`Context`
             The invocation context to use.
-        channel: :class:`discord.abc.Messageable`
+        channel: :class:`guilded.abc.Messageable`
             The messageable to send the message to. If not given
             then it defaults to the channel in the context.
         wait: :class:`bool`
@@ -682,24 +658,17 @@ class Menu(metaclass=_MenuMeta):
         -------
         MenuError
             An error happened when verifying permissions.
-        discord.HTTPException
+        guilded.HTTPException
             Adding a reaction failed.
         """
-
-        # Clear the buttons cache and re-compute if possible.
-        try:
-            del self.buttons
-        except AttributeError:
-            pass
 
         self.bot = bot = ctx.bot
         self.ctx = ctx
         self._author_id = ctx.author.id
         channel = channel or ctx.channel
-        me = channel.guild.me if getattr(channel, 'guild', None) else ctx.bot.user
-        permissions = channel.permissions_for(me)
-        self.__me = discord.Object(id=me.id)
-        self._verify_permissions(ctx, channel, permissions)
+        #me = channel.guild.me if getattr(channel, 'guild', None) else ctx.bot.user
+        #permissions = channel.permissions_for(me)
+        #self._verify_permissions(ctx, channel, permissions)
         self._event.clear()
         msg = self.message
         if msg is None:
@@ -715,8 +684,8 @@ class Menu(metaclass=_MenuMeta):
             self.__tasks.append(bot.loop.create_task(self._internal_loop()))
 
             async def add_reactions_task():
-                for emoji in self.buttons:
-                    await msg.add_reaction(emoji)
+                for emote_id in self.buttons:
+                    await msg.add_reaction(emote_id)
             self.__tasks.append(bot.loop.create_task(add_reactions_task()))
 
             if wait:
@@ -751,12 +720,12 @@ class Menu(metaclass=_MenuMeta):
         ------------
         ctx: :class:`Context`
             The invocation context to use.
-        channel: :class:`discord.abc.Messageable`
+        channel: :class:`guilded.abc.Messageable`
             The messageable to send the message to.
 
         Returns
         --------
-        :class:`discord.Message`
+        :class:`guilded.ChatMessage`
             The message that has been sent.
         """
         raise NotImplementedError
@@ -767,6 +736,7 @@ class Menu(metaclass=_MenuMeta):
         for task in self.__tasks:
             task.cancel()
         self.__tasks.clear()
+
 
 class PageSource:
     """An interface representing a menu page's data source for the actual menu page.
@@ -862,16 +832,16 @@ class PageSource:
         This method must return one of the following types.
 
         If this method returns a ``str`` then it is interpreted as returning
-        the ``content`` keyword argument in :meth:`discord.Message.edit`
-        and :meth:`discord.abc.Messageable.send`.
+        the ``content`` keyword argument in :meth:`guilded.ChatMessage.edit`
+        and :meth:`guilded.abc.Messageable.send`.
 
-        If this method returns a :class:`discord.Embed` then it is interpreted
-        as returning the ``embed`` keyword argument in :meth:`discord.Message.edit`
-        and :meth:`discord.abc.Messageable.send`.
+        If this method returns a :class:`guilded.Embed` then it is interpreted
+        as returning the ``embed`` keyword argument in :meth:`guilded.ChatMessage.edit`
+        and :meth:`guilded.abc.Messageable.send`.
 
         If this method returns a ``dict`` then it is interpreted as the
-        keyword-arguments that are used in both :meth:`discord.Message.edit`
-        and :meth:`discord.abc.Messageable.send`. The two of interest are
+        keyword-arguments that are used in both :meth:`guilded.ChatMessage.edit`
+        and :meth:`guilded.abc.Messageable.send`. The two of interest are
         ``embed`` and ``content``.
 
         Parameters
@@ -883,10 +853,11 @@ class PageSource:
 
         Returns
         ---------
-        Union[:class:`str`, :class:`discord.Embed`, :class:`dict`]
+        Union[:class:`str`, :class:`guilded.Embed`, :class:`dict`]
             See above.
         """
         raise NotImplementedError
+
 
 class MenuPages(Menu):
     """A special type of Menu dedicated to pagination.
@@ -935,13 +906,13 @@ class MenuPages(Menu):
         return self._source.is_paginating()
 
     async def _get_kwargs_from_page(self, page):
-        value = await discord.utils.maybe_coroutine(self._source.format_page, self, page)
+        value = await guilded.utils.maybe_coroutine(self._source.format_page, self, page)
         if isinstance(value, dict):
             return value
         elif isinstance(value, str):
-            return { 'content': value, 'embed': None }
-        elif isinstance(value, discord.Embed):
-            return { 'embed': value, 'content': None }
+            return {'content': value}
+        elif isinstance(value, guilded.Embed):
+            return {'embed': value}
 
     async def show_page(self, page_number):
         page = await self._source.get_page(page_number)
@@ -987,33 +958,37 @@ class MenuPages(Menu):
             return True
         return max_pages <= 2
 
-    @button('\N{BLACK LEFT-POINTING DOUBLE TRIANGLE WITH VERTICAL BAR}\ufe0f',
-            position=First(0), skip_if=_skip_double_triangle_buttons)
+    # black_left_pointing_double_triangle_with_vertical_bar
+    @button(90002146, position=First(0), skip_if=_skip_double_triangle_buttons)
     async def go_to_first_page(self, payload):
         """go to the first page"""
         await self.show_page(0)
 
-    @button('\N{BLACK LEFT-POINTING TRIANGLE}\ufe0f', position=First(1))
+    # arrow_backward
+    @button(90002144, position=First(1))
     async def go_to_previous_page(self, payload):
         """go to the previous page"""
         await self.show_checked_page(self.current_page - 1)
 
-    @button('\N{BLACK RIGHT-POINTING TRIANGLE}\ufe0f', position=Last(0))
+    # arrow_forward
+    @button(90002140, position=Last(0))
     async def go_to_next_page(self, payload):
         """go to the next page"""
         await self.show_checked_page(self.current_page + 1)
 
-    @button('\N{BLACK RIGHT-POINTING DOUBLE TRIANGLE WITH VERTICAL BAR}\ufe0f',
-            position=Last(1), skip_if=_skip_double_triangle_buttons)
+    # black_right_pointing_double_triangle_with_vertical_bar
+    @button(90002142, position=Last(1), skip_if=_skip_double_triangle_buttons)
     async def go_to_last_page(self, payload):
         """go to the last page"""
         # The call here is safe because it's guarded by skip_if
         await self.show_page(self._source.get_max_pages() - 1)
 
-    @button('\N{BLACK SQUARE FOR STOP}\ufe0f', position=Last(2))
+    # black_square_for_stop
+    @button(90002152, position=Last(2))
     async def stop_pages(self, payload):
         """stops the pagination session."""
         self.stop()
+
 
 class ListPageSource(PageSource):
     """A data source for a sequence of items.
@@ -1065,7 +1040,9 @@ class ListPageSource(PageSource):
             base = page_number * self.per_page
             return self.entries[base:base + self.per_page]
 
+
 _GroupByEntry = namedtuple('_GroupByEntry', 'key items')
+
 
 class GroupByPageSource(ListPageSource):
     """A data source for grouped by sequence of items.
@@ -1128,6 +1105,7 @@ class GroupByPageSource(ListPageSource):
         """
         raise NotImplementedError
 
+
 def _aiter(obj, *, _isasync=inspect.iscoroutinefunction):
     cls = obj.__class__
     try:
@@ -1139,6 +1117,7 @@ def _aiter(obj, *, _isasync=inspect.iscoroutinefunction):
     if _isasync(async_iter):
         raise TypeError('{0.__name__!r} object is not an async iterable'.format(cls))
     return async_iter
+
 
 class AsyncIteratorPageSource(PageSource):
     """A data source for data backed by an asynchronous iterator.

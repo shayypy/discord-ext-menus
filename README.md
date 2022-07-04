@@ -1,6 +1,6 @@
-### discord-ext-menus
+### guilded-ext-menus
 
-An experimental extension menu that makes working with reaction menus a bit easier.
+An experimental extension that makes working with reaction menus a bit easier. This is a fork of [discord-ext-menus for discord.py](https://github.com/Rapptz/discord-ext-menus).
 
 **There are no front-facing docs for this and it's not on PyPI. As this is meant to be a repository for testing**
 
@@ -9,7 +9,7 @@ An experimental extension menu that makes working with reaction menus a bit easi
 Installing is done purely via git:
 
 ```py
-python -m pip install -U git+https://github.com/Rapptz/discord-ext-menus
+python -m pip install -U git+https://github.com/shayypy/guilded-ext-menus
 ```
 
 ## Getting Started
@@ -19,21 +19,22 @@ To whet your appetite, the following examples show the fundamentals on how to cr
 The first example shows a basic menu that has a stop button and two reply buttons:
 
 ```py
-from discord.ext import menus
+from guilded.ext import menus
 
 class MyMenu(menus.Menu):
     async def send_initial_message(self, ctx, channel):
         return await channel.send(f'Hello {ctx.author}')
 
-    @menus.button('\N{THUMBS UP SIGN}')
+    # https://gist.github.com/shayypy/8e492ad2d8801bfd38415986f68a547e
+    @menus.button(90001164)
     async def on_thumbs_up(self, payload):
         await self.message.edit(content=f'Thanks {self.ctx.author}!')
 
-    @menus.button('\N{THUMBS DOWN SIGN}')
+    @menus.button(90001170)
     async def on_thumbs_down(self, payload):
         await self.message.edit(content=f"That's not nice {self.ctx.author}...")
 
-    @menus.button('\N{BLACK SQUARE FOR STOP}\ufe0f')
+    @menus.button(90002152)
     async def on_stop(self, payload):
         self.stop()
 ```
@@ -52,7 +53,7 @@ If an error happens then an exception of type `menus.MenuError` is raised.
 This second example shows a confirmation menu and how we can compose it and use it later:
 
 ```py
-from discord.ext import menus
+from guilded.ext import menus
 
 class Confirm(menus.Menu):
     def __init__(self, msg):
@@ -63,12 +64,13 @@ class Confirm(menus.Menu):
     async def send_initial_message(self, ctx, channel):
         return await channel.send(self.msg)
 
-    @menus.button('\N{WHITE HEAVY CHECK MARK}')
+    # https://gist.github.com/shayypy/8e492ad2d8801bfd38415986f68a547e
+    @menus.button(90002171)
     async def do_confirm(self, payload):
         self.result = True
         self.stop()
 
-    @menus.button('\N{CROSS MARK}')
+    @menus.button(90002175)
     async def do_deny(self, payload):
         self.result = False
         self.stop()
@@ -105,7 +107,7 @@ None of these page sources deal with formatting of data, leaving that up to you.
 For the sake of example, here's a basic list source that is paginated:
 
 ```py
-from discord.ext import menus
+from guilded.ext import menus
 
 class MySource(menus.ListPageSource):
     def __init__(self, data):
@@ -113,19 +115,19 @@ class MySource(menus.ListPageSource):
 
     async def format_page(self, menu, entries):
         offset = menu.current_page * self.per_page
-        return '\n'.join(f'{i}. {v}' for i, v in enumerate(entries, start=offset))
+        return '\n'.join(f'{i}: {v}' for i, v in enumerate(entries, start=offset))
 
 # somewhere else:
 pages = menus.MenuPages(source=MySource(range(1, 100)), clear_reactions_after=True)
 await pages.start(ctx)
 ```
 
-The `format_page` can return either a `str` for content, `discord.Embed` for an embed, or a `dict` to pass into the kwargs of `Message.edit`.
+The `format_page` can return either a `str` for content, `guilded.Embed` for an embed, or a `dict` to pass into the kwargs of `Message.edit`.
 
 Some more examples using `GroupByPageSource`:
 
 ```py
-from discord.ext import menus
+from guilded.ext import menus
 
 class Test:
     def __init__(self, key, value):
@@ -140,7 +142,7 @@ data = [
 
 class Source(menus.GroupByPageSource):
     async def format_page(self, menu, entry):
-        joined = '\n'.join(f'{i}. <Test value={v.value}>' for i, v in enumerate(entry.items, start=1))
+        joined = '\n'.join(f'{i}: <Test value={v.value}>' for i, v in enumerate(entry.items, start=1))
         return f'**{entry.key}**\n{joined}\nPage {menu.current_page + 1}/{self.get_max_pages()}'
 
 pages = menus.MenuPages(source=Source(data, key=lambda t: t.key, per_page=12), clear_reactions_after=True)
@@ -150,7 +152,7 @@ await pages.start(ctx)
 Another one showing `AsyncIteratorPageSource`:
 
 ```py
-from discord.ext import menus
+from guilded.ext import menus
 
 class Test:
     def __init__(self, value):
@@ -169,7 +171,7 @@ class Source(menus.AsyncIteratorPageSource):
 
     async def format_page(self, menu, entries):
         start = menu.current_page * self.per_page
-        return f'\n'.join(f'{i}. {v!r}' for i, v in enumerate(entries, start=start))
+        return f'\n'.join(f'{i}: {v!r}' for i, v in enumerate(entries, start=start))
 
 pages = menus.MenuPages(source=Source(), clear_reactions_after=True)
 await pages.start(ctx)
